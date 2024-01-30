@@ -1,197 +1,64 @@
 #include <Arduino.h>
-
-// // put function declarations here:
-// int myFunction(int, int);
-
-// void setup() {
-//   // put your setup code here, to run once:
-//   int result = myFunction(2, 3);
-// }
-
-// void loop() {
-//   // put your main code here, to run repeatedly:
-// }
-
-// // put function definitions here:
-// int myFunction(int x, int y) {
-//   return x + y;
-// }
-
 #include <SimpleFOC.h>
 
-// Motor instance
-BLDCMotor motor = BLDCMotor(14);
-BLDCDriver6PWM driver = BLDCDriver6PWM(A_PHASE_UH, A_PHASE_UL, A_PHASE_VH, A_PHASE_VL, A_PHASE_WH, A_PHASE_WL);
-LowsideCurrentSense currentSense = LowsideCurrentSense(0.003f, -64.0f/7.0f, A_OP1_OUT, A_OP2_OUT, A_OP3_OUT);
+// using a little, sensorless outrunner. Should be capable of at least 300W.
+BLDCMotor motor(14, 0.087, 900);                                                               // hmm let's mess around with KV. they say it's usually 150%-170% of datasheet value but they also say it's 100%-200%.
+BLDCDriver6PWM driver(A_PHASE_UH, A_PHASE_UL, A_PHASE_VH, A_PHASE_VL, A_PHASE_WH, A_PHASE_WL); // got this from here: https://github.com/simplefoc/Arduino-FOC/blob/master/examples/hardware_specific_examples/B_G431B_ESC1/B_G431B_ESC1.ino
+LowsideCurrentSense current_sense(0.003, -64.0 / 7.0, A_OP1_OUT, A_OP2_OUT, A_OP3_OUT);        // got this from here: https://github.com/simplefoc/Arduino-FOC/blob/master/examples/hardware_specific_examples/B_G431B_ESC1/B_G431B_ESC1.ino
 
+Commander commander(Serial);
+void doMotor(char *cmd) { commander.motion(&motor, cmd); }
+void doTarget(char *cmd) { commander.motion(&motor, cmd); }
+void doLimitCurrent(char *cmd) { commander.scalar(&motor.current_limit, cmd); }
 
-// encoder instance
-Encoder encoder = Encoder(A_HALL2, A_HALL3, 2048, A_HALL1);
+float target = 200; //rpm. this needs to be low to start. i'm almost certain your motor won't be able to make big jumps in rpm. to go higher, ramp it up. maybe write a ramp function that sets motor.target += 20 every few seconds. can definitely just start with commander "T??"
 
-// Interrupt routine intialisation
-// channel A and B callbacks
-void doA(){encoder.handleA();}
-void doB(){encoder.handleB();}
-void doIndex(){encoder.handleIndex();}
-
-// instantiate the commander
-Commander command = Commander(Serial);
-void doTarget(char* cmd) { command.motion(&motor, cmd); }
-
-void setup() {
-  
-  // initialize encoder sensor hardware
-  encoder.init();
-  encoder.enableInterrupts(doA, doB); 
-
-  // link the motor to the sensor
-  motor.linkSensor(&encoder);
-  
-  // driver config
-  // power supply voltage [V]
-  driver.voltage_power_supply = 12;
-  driver.init();
-  // link the motor and the driver
-  motor.linkDriver(&driver);
-  // link current sense and the driver
-  currentSense.linkDriver(&driver);
-
-  // current sensing
-  currentSense.init();
-  // no need for aligning
-  currentSense.skip_align = true;
-  motor.linkCurrentSense(&currentSense);
-
-  // aligning voltage [V]
-  motor.voltage_sensor_align = 3;
-  // index search velocity [rad/s]
-  motor.velocity_index_search = 3;
-
-  // set motion control loop to be used
-  motor.controller = MotionControlType::velocity;
-
-  // contoller configuration 
-  // default parameters in defaults.h
-
-  // velocity PI controller parameters
-  motor.PID_velocity.P = 0.2;
-  motor.PID_velocity.I = 20;
-  // default voltage_power_supply
-  motor.voltage_limit = 6;
-  // jerk control using voltage voltage ramp
-  // default value is 300 volts per sec  ~ 0.3V per millisecond
-  motor.PID_velocity.output_ramp = 1000;
- 
-  // velocity low pass filtering time constant
-  motor.LPF_velocity.Tf = 0.01;
-
-  // angle P controller
-  motor.P_angle.P = 20;
-  //  maximal velocity of the position control
-  motor.velocity_limit = 4;
-
-
-  // use monitoring with serial 
+void setup()
+{
   Serial.begin(115200);
-  // comment out if not needed
-  motor.useMonitoring(Serial);
-  
-  // initialize motor
-  motor.init();
-  // align encoder and start FOC
-  motor.initFOC();
+  delay(3000); //NEED THIS, at least for some using platformio, so that the IDE serial monitor has time to boot up before the MCU tries to send stuff to it. at least for me, if i don't do this, I miss some or all SimpleFOCDebug statements at the beginning, which are SO useful.
+  motor.useMonitoring(Serial); //this doesn't slow anything down. need this if you want to see the SimpleFOCDebug statements at the beginning, which are so useful. 
+  motor.monitor_variables = _MON_TARGET | _MON_VEL | _MON_ANGLE; // specifies which variables get output. there's a whole bunch of them you can monitor. check this out if interested: https://docs.simplefoc.com/monitoring
+  motor.monitor_downsample = 500;                                // downsampling, or how many loops between each communication with Serial. default 10. Higher number here means less frequent samples, so less latency, and less crazy serial output.
 
-  // add target command T
-  command.add('T', doTarget, "target angle");
+  driver.voltage_power_supply = 12; //
+  // driver.voltage_limit = 5;   //makes no visible changes. motor.current_limit is the limiting factor.
+  driver.pwm_frequency = 30000; // 20kHz is the standard for many boards, but the B-G431B-ESC1 can do 30kHz. i don't see why one would lower this if hardware can handle it. the higher, the smoother.
+  driver.init(); //essential
+  motor.linkDriver(&driver); //essential
 
-  Serial.println(F("Motor ready."));
-  Serial.println(F("Set the target angle using serial terminal:"));
-  _delay(1000);
+  // current_sense.skip_align; //don't do this unless...idk, you'd need some good reason.
+  current_sense.linkDriver(&driver); //essential
+  current_sense.init(); //essential
+  motor.linkCurrentSense(&current_sense); //essential
+
+  motor.current_limit = 1.2; // measured in Amps. IF THIS IS TOO LOW, YOUR MOTOR WON'T SPIN. REGARDLESS, START LOW (5% of rated current and move up to 10%, 20%, 30%, etc.) REQUIRES motor.phase_resistance to be set, which it is. 
+  // motor.voltage_limit = 0.05f; // do this OR motor.current_limit. current limit superior, in my humble opinion.
+  motor.torque_controller = TorqueControlType::foc_current; //voltage mode should work. dc_current better. foc_current best. Thankfully, the STM32G4 on the B-G431B-ESC1 can do 170MHz so it can do foc_current, which needs lots of computation power.
+  motor.controller = MotionControlType::velocity_openloop; //it's the name of this example and the identifying part of this setup/algorithm.
+  // motor.foc_modulation = FOCModulationType::SinePWM; // default or...
+  // motor.foc_modulation = FOCModulationType::SpaceVectorPWM; // not default. 15% more power, but only matters once everything else is tuned, i think.
+  motor.initFOC(); //essential
+  motor.init(); //essential
+
+  motor.target = target * 6.28 / 60;              // converting rpm to rev/s
+  commander.add('M', doMotor, (char *)"motor");   // this is the connection control command SimpleFOCStudio (GUI) needs to send to connect and work...haven't gotten it to work yet :) 
+  commander.add('T', doTarget, (char *)"target"); // type in "T20" to set the target to 20. Type in "T50" to set the target to 50, etc.
+  commander.add('C', doLimitCurrent, (char *)"current"); //type in "C1" to set the current limit to 1A. Type in "C10" to set the current limit to 10A, etc.
+
+  Serial.println("setup done");
 }
 
-void loop() {
-  // main FOC algorithm function
-  motor.loopFOC();
-
-  // Motion control function
-  motor.move();
-
-  // function intended to be used with serial plotter to monitor motor variables
-  // significantly slowing the execution down!!!!
-  // motor.monitor();
-  
-  // user communication
-  command.run();
+void loop()
+{
+  motor.loopFOC(); //this needs to run. always.
+  motor.move(); //this needs to run. always.
+  motor.monitor(); //enable if you wish. with downsampling of 500, shouldn't be too epileptic and shouldn't affect performance. lower downsampling if you want more data (and more latency)
+  commander.run(); //this never hurts. much neater than writing one's own "if(Serial.available()>0) { String command = Serial.readString(); ...}"
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// #include <SimpleFOC.h>
-
-// // MagneticSensorI2C(uint8_t _chip_address, float _cpr, uint8_t _angle_register_msb)
-// //  chip_address  I2C chip address
-// //  bit_resolution  resolution of the sensor
-// //  angle_register_msb  angle read register msb
-// //  bits_used_msb  number of used bits in msb register
-// // 
-// // make sure to read the chip address and the chip angle register msb value from the datasheet
-// // also in most cases you will need external pull-ups on SDA and SCL lines!!!!!
-// //
-// // For AS5058B
-// // MagneticSensorI2C sensor = MagneticSensorI2C(0x40, 14, 0xFE, 8);
-
-// // Example of AS5600 configuration 
-// MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
-
-
-// void setup() {
-//   // monitoring port
-//   Serial.begin(115200);
-
-//   // configure i2C
-//   Wire.setClock(400000);
-//   // initialise magnetic sensor hardware
-//   sensor.init();
-
-//   Serial.println("Sensor ready");
-//   _delay(1000);
-// }
-
-// void loop() {
-//   // iterative function updating the sensor internal variables
-//   // it is usually called in motor.loopFOC()
-//   // this function reads the sensor hardware and 
-//   // has to be called before getAngle nad getVelocity
-//   sensor.update();
-  
-//   // display the angle and the angular velocity to the terminal
-//   Serial.print(sensor.getAngle());
-//   Serial.print("\t");
-//   Serial.println(sensor.getVelocity());
-// }
+// Bonus: if you want to kill the program from the Serial monitor for some reason, define this before setup: 
+// void(* resetFunc) (void) = 0; //declare reset function at address 0
+// Then you need your own "if(Serial.available()>0) { String command = Serial.readString(); ...}" kind of thing going on in loop();
+// Then, in loop, send something via Serial Monitor to make resetFunc() execute.
+// That being said, "T0" works fine, and the reset approach will not actually reset the board. you'll have to upload again or something to restart the program.
