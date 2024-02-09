@@ -1,5 +1,5 @@
 
-#define MOTOR_POLE_PAIRS                14
+#define MOTOR_POLE_PAIRS                7
 #define MOTOR_INTERNAL_R                0.087f
 #define MOTOR_KV                        900
 
