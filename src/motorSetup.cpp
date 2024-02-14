@@ -1,74 +1,100 @@
-// #include "SimpleFOC.h"
-// #include "motorSetup.h"
+#include "SimpleFOC.h"
+#include "motorSetup.h"
 
-// void openLoopVelocitySetup() {
-// // Set up encoder
-//     sensor.init();
-//     // sensor.enableInterrupts(doA, doB); // For 'encoder' does not work
-//     Serial.println("Sensor Ready!");
+// Init Motor
+BLDCMotor motor(7, 0.500f, 900);                                                               // hmm let's mess around with KV. they say it's usually 150%-170% of datasheet value but they also say it's 100%-200%.
+BLDCDriver6PWM driver(A_PHASE_UH, A_PHASE_UL, A_PHASE_VH, A_PHASE_VL, A_PHASE_WH, A_PHASE_WL); // got this from here: https://github.com/simplefoc/Arduino-FOC/blob/master/examples/hardware_specific_examples/B_G431B_ESC1/B_G431B_ESC1.ino
+LowsideCurrentSense currentSense = LowsideCurrentSense(0.003f, -64.0f/7.0f, A_OP1_OUT, A_OP2_OUT, A_OP3_OUT);
 
-//     // Link Motor and Encoder
-//     motor.linkSensor(&sensor);
-//     Serial.println("Motor and Sensor Linked!");
+// Init Encoder
+MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 
-//     // Set up motor driver
-//     driver.voltage_power_supply = 12;   // Voltage Supply
-//     driver.init();
-//     motor.linkDriver(&driver);
-//     Serial.println("Driver Ready!");
+// instantiate the commander
+Commander command = Commander(Serial);
+void doTarget(char* cmd) { command.scalar(&motor.target, cmd); }
 
-//     // Set up Current Sensing
-//     // currentSense.init();
-//     // currentSense.skip_align = true;     // no need for aligning
-//     // motor.linkCurrentSense(&currentSense);
+void openLoopAngleSetup() {
 
-//     // Set up system limits
-//     motor.voltage_limit = 1;            // Volts
-//     motor.velocity_limit = 20;          // rad/s
-//     motor.voltage_sensor_align = 1;     // Limits volts during FOC calibration
-//     // motor.current_limit = 0.6;          // Amps
+    Serial.begin(115200);
+    Wire.setClock(40000);
 
-//     // Set up Velocity PID Coefficients
-//     // motor.PID_velocity.P = 0.2f;
-//     // motor.PID_velocity.I = 20.0;
-//     // motor.PID_velocity.D = 0;
-//     // motor.LPF_velocity.Tf = 0.01f;
+    sensor.init();
+    driver.init();
+    motor.linkDriver(&driver);
 
-//     // Set up Position PID Coefficients
-//     // motor.P_angle.P = 10.0;
-//     // motor.P_angle.I = 0.0;
-//     // motor.P_angle.D = 0;
-//     // motor.P_angle.output_ramp = 100;
-//     // motor.LPF_angle.Tf = 0.03f;
+    driver.voltage_power_supply = 12;
+    motor.voltage_limit = 4;
+    motor.current_limit = 1.0;
+    motor.velocity_limit = 3;
 
-//     // Set up Motor
-//     // motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
-//     motor.controller = MotionControlType::velocity_openloop;
-//     // motor.controller = MotionControlType::angle;      // For position control test
-//     motor.useMonitoring(Serial);
-//     // motor.monitor_variables = _MON_ANGLE | _MON_TARGET | _MON_VEL | _MON_CURR_Q | _MON_VOLT_Q;
+    motor.controller = MotionControlType::angle_openloop;
+    motor.init();
+
+    command.add('T', doTarget, "Target Open Loop Position = ");
+    Serial.println("Motor Setup Complete!");
+
+    delay(1000);
+
+}
+
+void closedLoopVelocitySetup(){
+
+    Serial.begin(115200);
+    Wire.setClock(40000);
+
+    sensor.init();
+    motor.linkSensor(&sensor);
+
+    driver.init();
+    motor.linkDriver(&driver);
+
+    // currentSense.init();
+    // motor.linkCurrentSense(&currentSense);
+
+    driver.voltage_power_supply = 12;
+    motor.voltage_sensor_align = 1;
+    motor.voltage_limit = 4;
+    motor.current_limit = 1.0;
+    motor.velocity_limit = 3;
+    motor.useMonitoring(Serial);
+
+    motor.controller = MotionControlType::velocity;
+    motor.PID_velocity.P = 0.5;
+    motor.PID_velocity.I = 10;
+    motor.PID_velocity.D = 0;
+    motor.PID_velocity.output_ramp = 10;
+    motor.LPF_velocity.Tf = 0.01;
+
+
+    motor.init();
+    motor.initFOC();
+
+    command.add('T', doTarget, "Target Closed Loop Position = ");
+    Serial.println("Motor Setup Complete!");
+
+    delay(1000);
+
+}
+
+void openLoopAngleLoop() {
     
-//     motor.init();
-//     // motor.initFOC();
-//     Serial.println("Motor Ready!");
+    sensor.update();
+    Serial.println(sensor.getAngle());
 
-// }
+    motor.move();
 
-// void openLoopVelocityLoop(float target) {
+    command.run();
 
-//     // Update system
-//     sensor.update();
+}
 
-//     // motor.PID_velocity.I = target;      // Use to tune PID
+void closedLoopVelocityLoop(){
 
-//     // motor.loopFOC();
-//     motor.move(target);
-//     motor.monitor();
+    motor.loopFOC();
 
-//     // Print statements
-//     // Serial.print(sensor.getAngle());
-//     // Serial.print("\t");
-//     // Serial.println(sensor.getVelocity());            // Radians??
-//     // Serial.print("\t");
-//     // Serial.println(motor.PID_velocity.I);
-// }
+    motor.move();
+
+    motor.monitor();
+
+    command.run();
+
+}
