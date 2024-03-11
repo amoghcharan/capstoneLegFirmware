@@ -3,15 +3,19 @@
 #include "motorSetup.h"
 
 void setup() {
-    
+   
     // openLoopAngleSetup();
-    closedLoopVelocitySetup();
+    // closedLoopVelocitySetup();
+    closedLoopCustomSetup();
+    // closedLoopPositionSetup();
 
 }
 
 void loop() {
 
     // openLoopAngleLoop();
+    // openLooopTrajectoryL2(); 
+    // openLoopHopLoop();
     closedLoopVelocityLoop();
 
 }

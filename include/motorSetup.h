@@ -6,12 +6,23 @@
 #define PHASE_RESISTANCE            0.500f // 0.087 = Internal Resistance
 
 void doTarget(char* cmd); 
+void doMotor(char* cmd); 
+void doP(char* cmd);
 
 void openLoopAngleSetup();
 void openLoopAngleLoop();
 
 void closedLoopVelocitySetup();
+void closedLoopPositionSetup();
 void closedLoopVelocityLoop();
+
+void closedLoopCustomSetup();
+void closedLoopCustomLoop();
+
+void openLoopHopLoop();
+void openLooopTrajectoryL1();
+void openLooopTrajectoryL2();
+
 
 
 
