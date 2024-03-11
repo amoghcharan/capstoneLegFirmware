@@ -2,6 +2,8 @@
 #include "motorSetup.h"
 
 #define TIMESTAMP                       5e5
+#define TIMESTEP_GAIN                   1e-6
+#define MIN_ELAPSED_TIME                0.2
 
 // Init Motor
 BLDCMotor motor(7, 0.500f, 900);                                                               // hmm let's mess around with KV. they say it's usually 150%-170% of datasheet value but they also say it's 100%-200%.
@@ -29,6 +31,19 @@ float filtered_angle = positionFilter(current_angle);
 int counter = 0;
 float trajectory[30];
 float zeroOffset;
+struct PIDTorque {
+    float P = 0.0;
+    float I = 0.0;
+    float D = 0.0;
+    float limit = 0.0;
+    float errorCurrent;
+    float errorPrevious;
+    float integral;
+    float derivative;
+    long anglePrevTS;
+    long angleNewTS;
+    float motorCommand;
+} torquePID;
 
 void openLoopAngleSetup() {
 
@@ -58,41 +73,6 @@ void openLoopAngleSetup() {
 
 }
 
-void closedLoopCustomSetup(){
-
-    Serial.begin(115200);
-    Wire.setClock(40000);
-
-    sensor.init();
-    motor.linkSensor(&sensor);
-
-    driver.init();
-    motor.linkDriver(&driver);
-    
-    // currentSense.init();
-    // motor.linkCurrentSense(&currentSense);
-
-    driver.voltage_power_supply = 12;
-    motor.voltage_sensor_align = 1;
-    // motor.voltage_limit = 4;
-    motor.current_limit = 1.5;
-    motor.velocity_limit = 20;
-    motor.useMonitoring(Serial);
-
-    motor.controller = MotionControlType::torque;
-    motor.torque_controller = TorqueControlType::voltage;
-
-    motor.init();
-    motor.initFOC();
-
-    command.add('T', doTarget, "Target Closed Loop Position = ");
-    command.add('M', doMotor, "Enable = ME 1, Disable ME 0");
-    command.add('P', doP, "P = ");
-    Serial.println("Motor Setup Complete!");
-
-    delay(1000);
-
-}
 
 void closedLoopVelocitySetup(){
 
@@ -179,13 +159,71 @@ void closedLoopPositionSetup(){
 
 }
 
+void closedLoopCustomSetup(){
+
+    Serial.begin(115200);
+    Wire.setClock(40000);
+
+    sensor.init();
+    motor.linkSensor(&sensor);
+
+    driver.init();
+    motor.linkDriver(&driver);
+    
+    // currentSense.init();
+    // motor.linkCurrentSense(&currentSense);
+
+    driver.voltage_power_supply = 12;
+    motor.voltage_sensor_align = 1;
+    // motor.voltage_limit = 4;
+    motor.current_limit = 1.5;
+    motor.velocity_limit = 20;
+    motor.useMonitoring(Serial);
+
+    motor.controller = MotionControlType::torque;
+    motor.torque_controller = TorqueControlType::voltage;
+
+    motor.init();
+    motor.initFOC();
+
+    command.add('T', doTarget, "Target Closed Loop Position = ");
+    command.add('M', doMotor, "Enable = ME 1, Disable ME 0");
+    command.add('P', doP, "P = ");
+    Serial.println("Motor Setup Complete!");
+
+    delay(1000);
+
+}
+
 void closedLoopCustomLoop(){
 
     motor.loopFOC();
-    motor.move();   // call PID loop output as move input
-    motor.monitor();
+    float motorCommand = torqueControlPIDLoop(motor.target);
+    Serial.println(motorCommand);
+    motor.move(motorCommand);   // call PID loop output as move input
+    // motor.monitor();
     command.run();
 
+}
+
+float torqueControlPIDLoop(float motor_target){
+    
+    torquePID.angleNewTS = micros();
+    float Ts = (torquePID.angleNewTS - torquePID.anglePrevTS)*TIMESTEP_GAIN;
+    if (Ts >= MIN_ELAPSED_TIME){
+
+        torquePID.errorCurrent = motor_target - sensor.getAngle();
+        torquePID.integral = torquePID.integral + (torquePID.errorCurrent*Ts);
+        if (torquePID.integral > torquePID.limit){torquePID.integral = 0;}
+        torquePID.derivative =  (torquePID.errorCurrent - torquePID.errorPrevious)/Ts;
+        torquePID.motorCommand = torquePID.P*torquePID.errorCurrent + torquePID.I*torquePID.integral + torquePID.D*torquePID.derivative;
+        if (torquePID.motorCommand >= (motor.current_limit - 0.2)){torquePID.motorCommand = (motor.current_limit - 0.2);}
+
+        torquePID.errorPrevious = torquePID.errorCurrent;
+        torquePID.anglePrevTS = torquePID.angleNewTS;
+        
+        return torquePID.motorCommand;
+    }
 }
 
 void openLoopAngleLoop() {

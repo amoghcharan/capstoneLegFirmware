@@ -18,6 +18,7 @@ void closedLoopVelocityLoop();
 
 void closedLoopCustomSetup();
 void closedLoopCustomLoop();
+float torqueControlPIDLoop(float motor_target);
 
 void openLoopHopLoop();
 void openLooopTrajectoryL1();
