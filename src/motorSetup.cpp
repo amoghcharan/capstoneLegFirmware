@@ -1,9 +1,11 @@
 #include "SimpleFOC.h"
 #include "motorSetup.h"
+#include "./communication/SimpleFOCDebug.h"
 
-#define TIMESTAMP                       5e5
+#define TIMESTAMP                       2e6
 #define TIMESTEP_GAIN                   1e-6
 #define MIN_ELAPSED_TIME                0.2
+#define ANGULAR_RESOLUTION              0.0015
 
 // Init Motor
 BLDCMotor motor(7, 0.500f, 900);                                                               // hmm let's mess around with KV. they say it's usually 150%-170% of datasheet value but they also say it's 100%-200%.
@@ -17,7 +19,10 @@ MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&motor.target, cmd); }
 void doMotor(char* cmd) { command.motor(&motor, cmd); }
+float motor_target = 0.0;
+// void doP(char* cmd) { command.scalar(&motor_target, cmd); }
 void doP(char* cmd) { command.scalar(&motor.PID_velocity.P, cmd); }
+
 
 // Init Low Pass Filter
 LowPassFilter positionFilter = LowPassFilter(0.001);
@@ -32,7 +37,7 @@ int counter = 0;
 float trajectory[30];
 float zeroOffset;
 struct PIDTorque {
-    float P = 0.0;
+    float P = 0.15;
     float I = 0.0;
     float D = 0.0;
     float limit = 0.0;
@@ -45,6 +50,11 @@ struct PIDTorque {
     float motorCommand;
 } torquePID;
 
+struct sensorOffset {
+    float angleOffset;
+    int direction;
+} sensorOffset;
+
 void openLoopAngleSetup() {
 
     Serial.begin(115200);
@@ -56,21 +66,31 @@ void openLoopAngleSetup() {
 
     driver.voltage_power_supply = 12;
     // motor.voltage_limit = 4;
-    motor.current_limit = 1.5;
-    motor.velocity_limit = 20;
+    motor.current_limit = 0.5;
+    motor.velocity_limit = 10;
+    motor.voltage_sensor_align = 0.5;
 
-    // motor.controller = MotionControlType::angle_openloop;
-    motor.controller = MotionControlType::velocity_openloop;
+    motor.controller = MotionControlType::angle_openloop;
+    // motor.controller = MotionControlType::velocity_openloop;
     motor.useMonitoring(Serial);
     motor.init();
+    // motor.initFOC();
 
     command.add('T', doTarget, "Target Open Loop Position = ");
     command.add('M', doMotor, "Enable = ME 1, Disable ME 0");
 
     Serial.println("Motor Setup Complete!");
 
-    delay(1000);
+    sensorOffsetCalibration();
+    delay(3000);
 
+}
+
+void sensorOffsetCalibration(){
+    sensorOffset.angleOffset = sensor.getAngle() - motor.shaft_angle;
+    sensorOffset.direction = motor.sensor_direction;
+    // SIMPLEFOC_DEBUG('Sensor Offset: ', sensorOffset.angleOffset);
+    // SIMPLEFOC_DEBUG('Sensor Direction: ', sensorOffset.direction);
 }
 
 
@@ -90,14 +110,15 @@ void closedLoopVelocitySetup(){
 
     driver.voltage_power_supply = 12;
     motor.voltage_sensor_align = 1;
-    // motor.voltage_limit = 4;
+    motor.voltage_limit = 2;
     motor.current_limit = 1.5;
-    motor.velocity_limit = 20;
+    motor.velocity_limit = 40;
     motor.useMonitoring(Serial);
 
     motor.controller = MotionControlType::velocity;
-    motor.PID_velocity.P = 2.0;          // need to play with this
-    motor.PID_velocity.I = 1.0;          // need to play with this
+    motor.torque_controller = TorqueControlType::voltage;
+    motor.PID_velocity.P = 0.01;          // need to play with this
+    motor.PID_velocity.I = 0.001;          // need to play with this
     motor.PID_velocity.D = 0;
     motor.PID_velocity.output_ramp = 1.0; // need to increase this 
     // motor.PID_velocity.limit = 0.5;
@@ -169,13 +190,15 @@ void closedLoopCustomSetup(){
 
     driver.init();
     motor.linkDriver(&driver);
+    currentSense.linkDriver(&driver);
     
     // currentSense.init();
+    // currentSense.skip_align = true;
     // motor.linkCurrentSense(&currentSense);
 
     driver.voltage_power_supply = 12;
     motor.voltage_sensor_align = 1;
-    // motor.voltage_limit = 4;
+    motor.voltage_limit = 4;
     motor.current_limit = 1.5;
     motor.velocity_limit = 20;
     motor.useMonitoring(Serial);
@@ -183,8 +206,17 @@ void closedLoopCustomSetup(){
     motor.controller = MotionControlType::torque;
     motor.torque_controller = TorqueControlType::voltage;
 
+    // motor.PID_current_q.P = 5;
+    // motor.PID_current_q.I= 300;
+    // motor.PID_current_d.P= 5;
+    // motor.PID_current_d.I = 300;
+    // motor.LPF_current_q.Tf = 0.01; 
+    // motor.LPF_current_d.Tf = 0.01; 
+
     motor.init();
     motor.initFOC();
+
+    motor_target = sensor.getAngle();
 
     command.add('T', doTarget, "Target Closed Loop Position = ");
     command.add('M', doMotor, "Enable = ME 1, Disable ME 0");
@@ -198,9 +230,11 @@ void closedLoopCustomSetup(){
 void closedLoopCustomLoop(){
 
     motor.loopFOC();
-    float motorCommand = torqueControlPIDLoop(motor.target);
-    Serial.println(motorCommand);
-    motor.move(motorCommand);   // call PID loop output as move input
+    float motorCommand = torqueControlPIDLoop(motor_target);
+    Serial.print(sensor.getVelocity());
+    Serial.print("\t"); 
+    Serial.println(motorCommand, 4);
+    motor.move();   // call PID loop output as move input
     // motor.monitor();
     command.run();
 
@@ -211,19 +245,24 @@ float torqueControlPIDLoop(float motor_target){
     torquePID.angleNewTS = micros();
     float Ts = (torquePID.angleNewTS - torquePID.anglePrevTS)*TIMESTEP_GAIN;
     if (Ts >= MIN_ELAPSED_TIME){
-
-        torquePID.errorCurrent = motor_target - sensor.getAngle();
+        if ((motor_target - sensor.getAngle()) < ANGULAR_RESOLUTION && (motor_target - sensor.getAngle()) > -ANGULAR_RESOLUTION) {
+            torquePID.errorCurrent = 0;
+        }
+        else {
+            torquePID.errorCurrent = motor_target - sensor.getAngle();
+        }
         torquePID.integral = torquePID.integral + (torquePID.errorCurrent*Ts);
         if (torquePID.integral > torquePID.limit){torquePID.integral = 0;}
         torquePID.derivative =  (torquePID.errorCurrent - torquePID.errorPrevious)/Ts;
-        torquePID.motorCommand = torquePID.P*torquePID.errorCurrent + torquePID.I*torquePID.integral + torquePID.D*torquePID.derivative;
-        if (torquePID.motorCommand >= (motor.current_limit - 0.2)){torquePID.motorCommand = (motor.current_limit - 0.2);}
+        torquePID.motorCommand = _constrain(torquePID.P*torquePID.errorCurrent + torquePID.I*torquePID.integral + torquePID.D*torquePID.derivative, -0.75, 0.75);
+        // torquePID.P*torquePID.errorCurrent + torquePID.I*torquePID.integral + torquePID.D*torquePID.derivative;
+        
+        // if (torquePID.motorCommand >= (motor.current_limit - 0.2)){torquePID.motorCommand = (motor.current_limit - 0.2);}
 
         torquePID.errorPrevious = torquePID.errorCurrent;
         torquePID.anglePrevTS = torquePID.angleNewTS;
-        
-        return torquePID.motorCommand;
     }
+    return torquePID.motorCommand;
 }
 
 void openLoopAngleLoop() {
@@ -236,13 +275,13 @@ void openLoopAngleLoop() {
     float velocity = sensor.getVelocity();
     Serial.print(sensor.getNewVelocity().currentAngle); 
     Serial.print("\t"); 
-    Serial.print(sensor.getNewVelocity().previousAngle); 
+    Serial.print(motor.sensor_direction); 
     Serial.print("\t"); 
-    Serial.print(sensor.getNewVelocity().timeStep, 4); 
+    Serial.print(motor.shaft_angle, 4); 
     Serial.print("\t"); 
-    Serial.print(velocity, 4); 
-    Serial.print("\t"); 
-    Serial.println((sensor.getNewVelocity().currentVel), 4); 
+    Serial.println(sensorOffset.angleOffset, 4); 
+    // Serial.print("\t"); 
+    // Serial.println((sensor.getNewVelocity().currentVel), 4); 
 
     // motor.monitor();
     motor.move();
@@ -254,13 +293,28 @@ void openLoopAngleLoop() {
 void openLoopHopLoop() {
     
     sensor.update();
-    Serial.print(sensor.getAngle()); Serial.print("\t"); Serial.println(sensor.getVelocity());
+    sensorData data = sensor.getNewVelocity();
+    float velocity = sensor.getVelocity();
+    Serial.print(sensor.getNewVelocity().currentAngle); 
+    Serial.print("\t"); 
+    Serial.print(motor.sensor_direction); 
+    Serial.print("\t"); 
+    Serial.print(motor.shaft_angle, 4); 
+    Serial.print("\t"); 
+    Serial.println(sensorOffset.angleOffset, 4);
+    // Serial.print(sensor.getAngle()); Serial.print("\t"); Serial.println(sensor.getVelocity());
+    // float setpoints[4] = {0.0, 1.57, 3.14, 1.57};
+    // float setpoints[2] = {0.5797, 0.40478};
+    float setpoints[2] = {3.53064, 3.02524};
 
     // each one second
     if(_micros() - timestamp_us > TIMESTAMP) {
         timestamp_us = _micros();
+        target_angle = setpoints[counter] - (sensorOffset.direction*sensorOffset.angleOffset);
+        counter++;
+        if (counter > 1){counter = 0;}
         // inverse angle
-        target_angle = -target_angle;   
+        // target_angle = -target_angle;   
     }
     motor.move(target_angle);
 
@@ -272,21 +326,18 @@ void openLooopTrajectoryL1(){
     
     sensor.update();
     // Serial.print(sensor.getAngle()); Serial.print("\t"); Serial.println(sensor.getVelocity());
-    float trajectory[30] = {3.2597, 3.3582, 3.444,  3.5156, 3.5727, 3.6131, 3.631,  3.6178, 3.5669, 3.4782,
-                            3.3607, 3.2291, 3.0981, 2.9783, 2.8761, 2.8761, 2.9339, 2.9861, 3.033,  3.0747,
-                            3.1115, 3.1435, 3.1709, 3.1942, 3.2134, 3.2289, 3.2409, 3.2499, 3.256,  3.2597};
+    float trajectory[30] = {3.0235, 2.9249, 2.8392, 2.7676, 2.7105, 2.67,   2.6522, 2.6654, 2.7163, 2.805,
+                            2.9225, 3.054,  3.1851, 3.3048, 3.407,  3.407,  3.3493, 3.2971, 3.2502, 3.2085,
+                            3.1717, 3.1397, 3.1122, 3.089,  3.0698, 3.0543, 3.0423, 3.0333, 3.0272, 3.0235};
     // each one second
     if(_micros() - timestamp_us > TIMESTAMP) {
         timestamp_us = _micros();
+        target_angle = trajectory[counter] - (sensorOffset.direction*sensorOffset.angleOffset);
         counter++;
+        if (counter > 29){counter = 0;}
+
         // inverse angle
-        target_angle = trajectory[counter];
-        // if (CCW){
-        //     target_angle = zeroOffset + trajectory[counter];   
-        // }
-        // else {
-        //     target_angle = zeroOffset - trajectory[counter];   
-        // }
+
     }
     motor.move(target_angle);
 
@@ -298,22 +349,18 @@ void openLooopTrajectoryL2(){
     
     sensor.update();
     // Serial.print(sensor.getAngle()); Serial.print("\t"); Serial.println(sensor.getVelocity());
-    float trajectory[30] = {2.2775, 2.2773, 2.2359, 2.1546, 2.0425, 1.9144, 1.7842, 1.6621, 1.5534, 1.46,
-                            1.3823, 1.3202, 1.2736, 1.2432, 1.2299, 1.2299, 1.3054, 1.379,  1.4515, 1.5232,
-                            1.5946, 1.6662, 1.7382, 1.8109, 1.8847, 1.9598, 2.0364, 2.1148, 2.1951, 2.2775};
+    float trajectory[30] = {0.864,  0.8643, 0.9057, 0.987,  1.0991, 1.2272, 1.3574, 1.4795, 1.5882, 1.6816,
+                            1.7593, 1.8214, 1.868,  1.8984, 1.9117, 1.9117, 1.8362, 1.7625, 1.6901, 1.6184,
+                            1.547,  1.4754, 1.4034, 1.3306, 1.2569, 1.1818, 1.1052, 1.0268, 0.9465, 0.864};
     // each one second
     if(_micros() - timestamp_us > TIMESTAMP) {
         timestamp_us = _micros();
+        target_angle = trajectory[counter] - (sensorOffset.direction*sensorOffset.angleOffset);
         counter++;
-        // inverse angle
-        target_angle = (trajectory[counter]);
+        if (counter > 29){counter = 0;}
 
-        // if (CCW){
-        //     target_angle = zeroOffset + trajectory[counter];   
-        // }
-        // else {
-        //     target_angle = zeroOffset - trajectory[counter];   
-        // }   
+        // inverse angle
+
     }
     motor.move(target_angle);
 

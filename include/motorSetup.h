@@ -24,6 +24,8 @@ void openLoopHopLoop();
 void openLooopTrajectoryL1();
 void openLooopTrajectoryL2();
 
+void sensorOffsetCalibration();
+
 
 
 

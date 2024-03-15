@@ -5,8 +5,8 @@
 void setup() {
    
     // openLoopAngleSetup();
-    // closedLoopVelocitySetup();
-    closedLoopCustomSetup();
+    closedLoopVelocitySetup();
+    // closedLoopCustomSetup();
     // closedLoopPositionSetup();
 
 }
@@ -17,5 +17,6 @@ void loop() {
     // openLooopTrajectoryL2(); 
     // openLoopHopLoop();
     closedLoopVelocityLoop();
+    // closedLoopCustomLoop();
 
 }
