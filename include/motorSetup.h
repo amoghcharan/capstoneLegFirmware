@@ -20,11 +20,12 @@ void closedLoopCustomSetup();
 void closedLoopCustomLoop();
 float torqueControlPIDLoop(float motor_target);
 
-void openLoopHopLoop();
-void openLooopTrajectoryL1();
-void openLooopTrajectoryL2();
+void openLoopTrajectoryL1();
+void openLoopTrajectoryL2();
 
 void sensorOffsetCalibration();
+void seriaDebugPrints();
+void closedLoopAngleLoop();
 
 
 

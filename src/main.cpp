@@ -2,21 +2,10 @@
 #include "SimpleFOC.h"
 #include "motorSetup.h"
 
-void setup() {
-   
-    // openLoopAngleSetup();
-    closedLoopVelocitySetup();
-    // closedLoopCustomSetup();
-    // closedLoopPositionSetup();
-
+void setup() {  
+    openLoopAngleSetup();
 }
 
 void loop() {
-
-    // openLoopAngleLoop();
-    // openLooopTrajectoryL2(); 
-    // openLoopHopLoop();
-    closedLoopVelocityLoop();
-    // closedLoopCustomLoop();
-
+    openLoopTrajectoryL1(); 
 }
